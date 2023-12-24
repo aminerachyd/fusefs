@@ -3,9 +3,10 @@ use fuser::{
     consts::FOPEN_DIRECT_IO, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
     ReplyDirectory, ReplyEntry, Request,
 };
-use libc::{EBADF, ENOENT, EROFS, O_APPEND, O_RDWR, O_TRUNC, O_WRONLY};
+use libc::ENOENT;
 use std::{
     collections::HashMap,
+    f32::consts::E,
     ffi::OsStr,
     fs,
     io::{self, ErrorKind},
@@ -91,7 +92,7 @@ impl<'a> Filesystem for FuseFS {
         flags: i32,
         reply: fuser::ReplyCreate,
     ) {
-        dbg!("CREATE", name, mode, umask, flags);
+        // dbg!("CREATE", name, mode, umask, flags);
 
         self.ino_count += 1;
         self.fh_count += 1;
@@ -116,7 +117,7 @@ impl<'a> Filesystem for FuseFS {
     }
 
     fn open(&mut self, _req: &Request<'_>, _ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
-        dbg!("OPEN", _ino, _flags);
+        // dbg!("OPEN", _ino, _flags);
 
         let fh = self.ino_to_fh.get(&_ino);
 
@@ -166,15 +167,19 @@ impl<'a> Filesystem for FuseFS {
             .find(|f| f.attr.ino == ino)
             .unwrap();
 
-        file.data.append(&mut data.to_vec());
+        if offset > 0 {
+            file.data.append(&mut data.to_vec());
+        } else {
+            file.data = data.to_vec();
+        }
 
-        file.attr.size = data.len() as u64;
+        file.attr.size = offset as u64 + data.len() as u64;
 
         reply.written(data.len() as u32)
     }
 
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        dbg!("LOOKUP", parent, name);
+        // dbg!("LOOKUP", parent, name);
 
         if let Some(file_name) = name.to_str() {
             let f = self.files.iter().find(|f| f.name == file_name);
@@ -188,7 +193,7 @@ impl<'a> Filesystem for FuseFS {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        dbg!("GETATTR", ino);
+        // dbg!("GETATTR", ino);
         match ino {
             1 => {
                 let attr = FuseFsFile::create_dir_attr(ino, _req.uid(), _req.gid());
@@ -204,6 +209,46 @@ impl<'a> Filesystem for FuseFS {
         }
     }
 
+    fn setattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<fuser::TimeOrNow>,
+        _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<std::time::SystemTime>,
+        fh: Option<u64>,
+        _crtime: Option<std::time::SystemTime>,
+        _chgtime: Option<std::time::SystemTime>,
+        _bkuptime: Option<std::time::SystemTime>,
+        flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        // dbg!("SETATTR", uid, gid, flags, size);
+
+        let new_attr;
+
+        if uid.is_none() || gid.is_none() || flags.is_none() {
+            new_attr = FuseFsFile::create_file_attr(ino, _req.uid(), _req.gid(), 0);
+        } else {
+            new_attr =
+                FuseFsFile::create_file_attr(ino, uid.unwrap(), gid.unwrap(), flags.unwrap());
+        }
+
+        let file = self.files.iter_mut().find(|f| f.attr.ino == ino);
+
+        match file {
+            Some(file) => {
+                file.attr = new_attr;
+                reply.attr(&TTL, &new_attr);
+            }
+            None => reply.error(ENOENT),
+        }
+    }
+
     fn read(
         &mut self,
         _req: &Request,
@@ -215,7 +260,7 @@ impl<'a> Filesystem for FuseFS {
         _lock: Option<u64>,
         reply: ReplyData,
     ) {
-        dbg!("READ", ino, _fh, offset);
+        // dbg!("READ", ino, _fh, offset);
         let f = self.files.iter().find(|f| f.attr.ino == ino);
         match f {
             Some(f) => reply.data(&f.data[offset as usize..]),
@@ -231,7 +276,7 @@ impl<'a> Filesystem for FuseFS {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        dbg!("READ", ino, _fh, offset);
+        // dbg!("READ", ino, _fh, offset);
         if ino != 1 {
             reply.error(ENOENT);
             return;
@@ -252,5 +297,21 @@ impl<'a> Filesystem for FuseFS {
             }
         }
         reply.ok();
+    }
+
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        // dbg!("UNLINK", name);
+
+        let str_name = name.to_str().unwrap();
+        let index_to_remove = self.files.iter().position(|f| f.name == str_name);
+        match index_to_remove {
+            Some(i) => {
+                self.files.remove(i);
+                reply.ok();
+            }
+            None => {
+                reply.ok();
+            }
+        }
     }
 }
